@@ -84,30 +84,58 @@ class TextClassificationExecutor(BaseExecutor):
         loss = outputs.loss
         self.log("train_loss", loss, prog_bar=True, on_epoch=True, on_step=True, logger=True)
         return loss
+    
+    def _model_predict(self, input_ids, mask, labels=None):
+        with torch.no_grad():
+            output = self.model(input_ids=input_ids, labels=labels, attention_mask=mask)
+            loss = output.loss.detach().item() if labels else -1 
+            logits = output.logits
+            predicted_class_id = logits.argmax(axis=1).tolist()
+            predicted_class_labels = [self.model.config.id2label[_id] for _id in predicted_class_id]
+        return {
+            'predicted_class_id': predicted_class_id, 
+            'predicted_class_labels': predicted_class_labels,
+        }, loss
 
     def validation_step(self, batch, batch_idx):
         x, y, mask = batch['input_ids'], batch['labels'], batch['attention_mask']
 
-        with torch.no_grad():
-            output = self.model(input_ids=x, labels=y, attention_mask=mask)
-            loss = output.loss.detach().item()
-            logits = output.logits
-            predicted_class_id = logits.argmax(axis=1).tolist()
+        pred_res, loss = self._model_predict(input_ids=x, mask=mask, labels=y)
         
         y = y.squeeze().tolist()
-        predicted_class_labels = [self.model.config.id2label[_id] for _id in predicted_class_id]
         gt_class_labels = [self.model.config.id2label[_id] for _id in y]
 
         self.log("val_loss", loss)
 
-        self.valid_eval_recorder.log_sample_dict_batch({
-            'predicted_class_id': predicted_class_id,
-            'predicted_class_label': predicted_class_labels,
+        dict_to_log = {
             'ground_truth_class_id': y,
             'gruond_truth_class_label': gt_class_labels
-        })
+        }
+        dict_to_log.update(pred_res)
+
+        self.valid_eval_recorder.log_sample_dict_batch(dict_to_log)
     
     def on_validation_end(self) -> None:
         return super().on_validation_end()
+    
+    def test_step(self, batch, batch_idx):
+        x, y, mask = batch['input_ids'], batch['labels'], batch['attention_mask']
+
+        pred_res, _ = self._model_predict(input_ids=x, mask=mask)
+        
+        y = y.squeeze().tolist()
+        gt_class_labels = [self.model.config.id2label[_id] for _id in y]
+
+        dict_to_log = {
+            'ground_truth_class_id': y,
+            'gruond_truth_class_label': gt_class_labels
+        }
+        dict_to_log.update(pred_res)
+
+        self.test_eval_recorder.log_sample_dict_batch(dict_to_log)
+    
+    def on_test_end(self) -> None:
+        return super().on_test_end()
+
 
 
