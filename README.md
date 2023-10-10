@@ -2,9 +2,17 @@
 
 This repository contains the following demo projects of the [runway_for_ml](https://github.com/EriChen0615/runway_for_ml) framework. These projects can be useful for understanding the framework or bootstrapping your own project.
 
+# Installation
+
+To install the project, simply run the following command under your working directory.
+
+```bash
+git clone git@github.com:EriChen0615/runway_for_ml_demo.git --recurse-submodules
+```
+
 # runway_for_ml in 30 minutes - IMDb Classification
 
-## Introduction
+## Introduction 
 
 Let's see how `runway_for_ml` can be used to tackle the IMDb text classification task to demonstrate the key features offered by the framework.
 
@@ -24,6 +32,7 @@ Our task is to train a transformer model that predicts whether the review is pos
 3. **Testing**: run inference on the test set and computes evaluation metrics.
 
 We will start with data processing.
+
 
 ## Data Processing 
 
