@@ -10,6 +10,14 @@ To install the project, simply run the following command under your working dire
 git clone git@github.com:EriChen0615/runway_for_ml_demo.git --recurse-submodules
 ```
 
+To install the environment, run
+
+```bash
+conda create -f environment.yml
+```
+
+this will create an environment named `runway_imdb`. You may then activate it with `conda activate runway_imdb` 
+
 # runway_for_ml in 30 minutes - IMDb Classification
 
 ## Introduction 
