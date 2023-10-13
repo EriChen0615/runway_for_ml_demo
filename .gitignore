@@ -2,3 +2,4 @@ cache/
 experiments/
 wandb/
 __pycache__/
+env/
