@@ -88,7 +88,7 @@ class TextClassificationExecutor(BaseExecutor):
     def _model_predict(self, input_ids, mask, labels=None):
         with torch.no_grad():
             output = self.model(input_ids=input_ids, labels=labels, attention_mask=mask)
-            loss = output.loss.detach().item() if labels else -1 
+            loss = output.loss.detach().item() if labels is not None else -1 
             logits = output.logits
             predicted_class_id = logits.argmax(axis=1).tolist()
             predicted_class_labels = [self.model.config.id2label[_id] for _id in predicted_class_id]

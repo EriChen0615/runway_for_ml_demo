@@ -22,7 +22,7 @@ local default_meta = {
       "project": "runway_demo",
       "tags": ['runway_demo'],
   },
-  "logger_enable": ["wandb", "tensorboard"], # "wandb" for wandb logger, "csv" for csv logger
+  "logger_enable": ["tensorboard"], # "wandb" for wandb logger, "csv" for csv logger
   "platform_type": "pytorch",
   "ignore_pretrained_weights": [],
   "seed": seed,

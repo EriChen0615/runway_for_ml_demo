@@ -230,6 +230,146 @@ During training/testing, you would take the output from one of the node. We will
 
 ## Training
 
+Now that we have prepared the data, let's train the model on the imdb classification task. To be specific, training means minimizing the [cross-entropy loss](https://en.wikipedia.org/wiki/Cross-entropy) on the training set. Intuitively, we are driving the model such that predicting the ground-truth label on the training set becomes more likely (i.e,. minimizing negative log-likelihood).
+
+To monitor training and determine when to stop, a validation set is usually left-out from the training set on which we test the model's performance after certain number of update steps. This is usually known as **validation**. On the validation set, we usually monitor the performance metric (such as *accuracy* and *precision*) and the loss (known as *validation loss*). When a decline in performance metric on validation usually indicates that the model is overfitting on the training set and training should therefore be terminated. Because calculating performance metric requires the model to do inference, which can be much more expensive than computing loss, validation is often done sparingly. Nonetheless, it is an indispensible step as it's well known that loss does not strictly correlate with performance metric, especially when the metric is brittle (e.g., joint goal accuracy in dialogue state tracking). 
+
+In summary, to train our model, we need to define:
+
+- **training**
+    - convert data to model input (usually torch tensors)
+    - optimization (type of optimizer and learning rate scheduler)
+    - loss computation
+    - training loss/statistics logging
+- **validation**
+    - run model inference
+    - validation metric computation
+    - validation loss/metrics logging
+
+In `runway_for_ml`, we follow `pytorch lightning` to gather training and validation logic into a single place, the `Executor`, for maintainability and reusuablity. Let's dive into `Executor` now.
+
+### Executor - where training/validation/inference happens
+
+An executor is any class that inherits the base class `BaseExecutor` from `runway_for_ml`. Here are the crucial functions that need to be defined:
+
+- `__init__()`: supply additional arguments to configure training/validation/inference
+- `_init_model()`: used by the base class to initialize model (`self.model`)
+- `training_step(self, batch, batch_idx)`: define how the model compute loss with batched data during training
+- `validation_step(self, batch, batch_idx)`: define how the model runs inference/computes validation loss given batched data
+- `test_step(self, batch, batch_idx)`: define how the model runs inference on test data
+- `train/test/val_dataloader()`: define the dataloaders in each stage.
+
+Since the base class `BaseExecutor` inherits `LightningModule`, we refer the readers to [pytorch lightning's documentation](https://lightning.ai/docs/pytorch/stable/common/lightning_module.html) for complete list of functions that can be overridden.
+
+> For those familiar with Pytorch Lightning, an Executor is a thin wrapper around pytorch lightning's (`LightningModule`)[https://lightning.ai/docs/pytorch/stable/common/lightning_module.html]. We provide additional logging/configuration functionality in the `BaseExecutor` class to make it readily usable by researchers. Their [tutorial](https://lightning.ai/docs/pytorch/stable/starter/introduction.html) is also useful for understanding `runway_for_ml`.
+
+Let's walk through the `TextClassificationExecutor` in the imdb project to get a more concrete idea. 
+
+First, the executor object needs to be initialized in `__init__()`. We define `self.id2label` and `self.label2id` for convenience, and then invoke the `__init__()` function of the parent class. 
+
+```python
+def __init__(self, ...):
+    self.id2label = {0: "NEGATIVE", 1: "POSITIVE"}
+    self.label2id = {"NEGATIVE": 0, "POSITIVE": 1}
+    super().__init__(...)
+```
+
+The `_init_model()` function intializes `self.model`. `model_config` will be what's supplied in the configuration file shown in [previous section](#breakdown-explanations-of-experiment-config). In this project, we simply load the model with `AutoModelForSequenceClassification.from_pretrained()` from huggingface - this is sufficient for most projects that do not concern modeling. You may also initialize the model you code up here. 
+
+```python
+def _init_model(self, model_config): 
+    """Initialize self.model
+
+    Args:
+        model_config (dict): contains key-values for model configuration
+    """
+    self.model = AutoModelForSequenceClassification.from_pretrained(
+        **model_config.from_pretrained_kwargs, id2label=self.id2label, label2id=self.label2id
+    )
+```
+
+The `prepare_data()` and `setup()` function essentially prepare the data to be consumed by the executor and set up the loggers. `self.dp` is the data pipeline and the `get_data` function gets the output of the specified node. This is where the data processing pipeline feeds data to the executor. 
+
+```python
+def prepare_data(self):
+    super().prepare_data()
+
+def setup(self, stage):
+    super().setup(stage)
+    self.prepared_data = self.dp.get_data([self.use_data_node], explode=True)
+
+    self.train_dataloaders = self.prepared_data.get('train_dataloaders', None)
+    self.valid_dataloaders = self.prepared_data.get('val_dataloaders', None)
+    self.test_dataloaders = self.prepared_data.get('test_dataloaders', None) 
+```
+
+> Note that thanks to `runway_for_ml` caching and scheduling system the `get_data` function will only run the necessary data processing nodes if there are changes to the DAG (e.g., node arguments). In addition, if a up-stream node gets updated, all the down-stream node will be re-run to ensure the data is updated.
+> Most of the time DAG re-computation is handled automatically. The only exception is when you only change the code of the functor - either fixing a bug or introducing new features - you need to set `regenerate=True` as explained in [previous section](#run-the-data-processing-pipeline) to update the data manually (don't forget to turn it off when done!).
+
+The `training_step()` function defines how loss is computed. For our simple imdb task it is simple. We also handle logging here. Note that `self.log` is provided by pytorch lightning. Documentation can be found [here](https://lightning.ai/docs/pytorch/stable/extensions/logging.html). If wandb logger is used, the data will be logged onto the wandb project specified in [the meta configuration](#breakdown-explanations-of-experiment-config). 
+
+```python
+def training_step(self, batch, batch_idx):
+    """Defines training step for each batch
+
+    Args:
+        batch (_type_): _description_
+        batch_idx (_type_): _description_
+    """
+    x, y, mask = batch['input_ids'], batch['labels'], batch['attention_mask']
+    outputs = self.model(input_ids=x, labels=y, attention_mask=mask)
+    loss = outputs.loss
+    self.log("train_loss", loss, prog_bar=True, on_epoch=True, on_step=True, logger=True)
+    return loss
+```
+
+The `validation_step()` function defines how validation is done. Usually a helper function that runs model inference is defined (`self._model_predict` here) to reuse inference code in validation and test. Also note that apart from `self.log`, there is also a `self.valid_eval_recorder` object that helps log inference data. `self.valid_eval_recorder` is a container initialized by the base model. With this, we can run a validaiton/evaluation pipeline that processes the recorder in each node (usually computing a new metric and logging it to the recorder). Having a unified container class allows us to use the same signature for every DataOp in evaluation. We will see an example of this soon in the [Evaluation section](#evaluation). Refer to the documentation in `runway_for_ml`'s [main repository](https://github.com/EriChen0615/runway_for_ml) or look at the inline comments in [the source code](https://github.com/EriChen0615/runway_for_ml/blob/develop/utils/eval_recorder.py). 
+
+```python
+def validation_step(self, batch, batch_idx):
+    x, y, mask = batch['input_ids'], batch['labels'], batch['attention_mask']
+
+    pred_res, loss = self._model_predict(input_ids=x, mask=mask, labels=y)
+    
+    y = y.squeeze().tolist()
+    gt_class_labels = [self.model.config.id2label[_id] for _id in y]
+
+    self.log("val_loss", loss)
+
+    dict_to_log = {
+        'ground_truth_class_id': y,
+        'gruond_truth_class_label': gt_class_labels
+    }
+    dict_to_log.update(pred_res)
+
+    self.valid_eval_recorder.log_sample_dict_batch(dict_to_log)
+```
+
+You may extend the executor to do much more. For ideas, consult the [lightning documentation](https://lightning.ai/docs/pytorch/stable/common/lightning_module.html). Usually, you want to write an executor that abstracts a certain type of model (in our case, a binary text classification model), so that it can work with a range of models and configurations. `runway_for_ml` provides a few ready-to-use executors for bootstrapping projects (WIP). 
+
+### Let's (configurably) train away!
+
+
+```bash
+EXPERIMENT_NAME="distilbert-imdb_classification"
+python src/main.py \
+    --config "configs/imdb_classification/exp_config.jsonnet" \
+    --experiment_name $EXPERIMENT_NAME \
+    --mode 'train' \
+    --opts \
+    meta.seed=615926 \
+    meta.EXPERIMENT_FOLDER="experiments/imdb" \
+    executor.init_kwargs.use_data_node="output:MakeImdbDataloaders" \
+    train.batch_size=32 \
+    train.optimizer_config.scheduler_params.num_warmup_steps=0 \
+    train.trainer_paras.num_sanity_val_steps=0 \
+    train.trainer_paras.accelerator="gpu" \
+    train.trainer_paras.devices=1 \
+```
+
+## Evaluation
+
+
 
 
 
